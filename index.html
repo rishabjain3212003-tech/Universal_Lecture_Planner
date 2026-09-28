@@ -203,16 +203,21 @@ tbody tr{transition:background .18s ease}
       <div class="top-field">
         <label>Preferred playback speed</label>
         <select id="playbackSpeed">
-          <option value="1">1.00×</option>
-          <option value="1.25">1.25×</option>
-          <option value="1.5">1.50×</option>
-          <option value="1.75">1.75×</option>
-          <option value="2">2.00×</option>
+          <option value="1.1">1.1×</option>
+          <option value="1.2">1.2×</option>
+          <option value="1.3">1.3×</option>
+          <option value="1.4">1.4×</option>
+          <option value="1.5">1.5×</option>
+          <option value="1.6">1.6×</option>
+          <option value="1.7">1.7×</option>
+          <option value="1.8">1.8×</option>
+          <option value="1.9">1.9×</option>
+          <option value="2.0">2.0×</option>
         </select>
       </div>
       <div class="top-field">
-        <label>Buffer days per week</label>
-        <input id="bufferDays" type="number" min="0" max="6" step="1" value="1">
+        <label>Safety buffer after target (days)</label>
+        <input id="bufferDays" type="number" min="0" max="60" step="1" value="7">
       </div>
     </div>
   </section>
@@ -220,8 +225,8 @@ tbody tr{transition:background .18s ease}
   <section class="stats">
     <div class="stat"><span>Completed</span><strong id="completedStat">0/0</strong><small id="completedPct">0% overall</small></div>
     <div class="stat"><span>Remaining</span><strong id="remainingStat">0</strong><small>lectures left</small></div>
-    <div class="stat"><span>Daily pace</span><strong id="dailyStat">0</strong><small>lectures/study day</small></div>
-    <div class="stat"><span>Weekly pace</span><strong id="weeklyStat">0</strong><small>lectures/week</small></div>
+    <div class="stat"><span>Daily pace</span><strong id="dailyStat">0</strong><small>to hit target date</small></div>
+    <div class="stat"><span>Weekly pace</span><strong id="weeklyStat">0</strong><small>to hit target date</small></div>
     <div class="stat"><span>Watch time/day</span><strong id="watchStat">0h</strong><small id="speedSmall">at selected speed</small></div>
   </section>
 
@@ -237,7 +242,7 @@ tbody tr{transition:background .18s ease}
 
   <section class="panel">
     <div class="panel-head">
-      <div><h2>Next 7-Day Target</h2><p>Your immediate subject-wise target after applying your buffer days.</p></div>
+      <div><h2>Next 7-Day Target</h2><p>Your immediate subject-wise target to stay on track for the main completion date.</p></div>
       <div class="badge" id="daysBadge">— days left</div>
     </div>
     <div class="table-wrap">
@@ -250,7 +255,7 @@ tbody tr{transition:background .18s ease}
 
   <section class="panel">
     <div class="panel-head">
-      <div><h2>Week-by-Week Planner</h2><p>Automatically rebuilt using your progress, target date and buffer days.</p></div>
+      <div><h2>Week-by-Week Planner</h2><p>The main plan finishes by your target date. Buffer days are shown separately for catch-up.</p></div>
       <div class="badge">Auto planner</div>
     </div>
     <div class="table-wrap"><table id="weeklyTable"></table></div>
@@ -364,7 +369,7 @@ tbody tr{transition:background .18s ease}
     studentName:"",
     targetDate:"2026-12-31",
     playbackSpeed:1.5,
-    bufferDays:1,
+    bufferDays:7,
     subjects:[
       {id:uid(),name:"FR",faculty:"Faculty name",total:110,completed:0,hours:2,minutes:30},
       {id:uid(),name:"Audit",faculty:"Faculty name",total:55,completed:0,hours:2,minutes:30},
@@ -414,29 +419,25 @@ tbody tr{transition:background .18s ease}
     let target=parseDate(state.targetDate)||addDays(t,90);
     if(diffDays(t,target)<0) target=t;
 
+    const buffer=clamp(parseInt(state.bufferDays)||0,0,60);
+    const finalDeadline=addDays(target,buffer);
+
     const rawDays=Math.max(1,diffDays(t,target)+1);
-    const buffer=clamp(parseInt(state.bufferDays)||0,0,6);
-
-    let cursor=t;
-    let studyDays=0;
-    let weeks=0;
-
-    while(toUTC(cursor)<=toUTC(target)){
-      const maxEnd=addDays(cursor,6);
-      const end=toUTC(maxEnd)>toUTC(target)?target:maxEnd;
-      const calendarDays=diffDays(cursor,end)+1;
-
-      // Apply the user's buffer setting to every week.
-      studyDays += Math.max(1,calendarDays-Math.min(buffer,Math.max(0,calendarDays-1)));
-      weeks += 1;
-      cursor=addDays(end,1);
-    }
+    const finalRawDays=Math.max(1,diffDays(t,finalDeadline)+1);
+    const weeks=Math.max(1,Math.ceil(rawDays/7));
+    const fallbackWeeks=Math.max(1,Math.ceil(finalRawDays/7));
 
     const rem=remainingLectures();
-    const weekly=weeks?rem/weeks:rem;
-    const daily=studyDays?rem/studyDays:rem;
+    const daily=rem/rawDays;
+    const weekly=rem/weeks;
 
-    return {t,target,rawDays,weeks,buffer,studyDays,rem,weekly,daily};
+    const fallbackDaily=rem/finalRawDays;
+    const fallbackWeekly=rem/fallbackWeeks;
+
+    return {
+      t,target,finalDeadline,rawDays,finalRawDays,weeks,fallbackWeeks,
+      buffer,studyDays:rawDays,rem,weekly,daily,fallbackDaily,fallbackWeekly
+    };
   }
 
   function renderSubjects(){
@@ -488,54 +489,70 @@ tbody tr{transition:background .18s ease}
     const rows=[];
     let start=p.t;
 
+    // Build the main plan only up to the requested target date.
     while(toUTC(start)<=toUTC(p.target)){
       const maxEnd=addDays(start,6);
       const end=toUTC(maxEnd)>toUTC(p.target)?p.target:maxEnd;
-      const calendarDays=diffDays(start,end)+1;
-
-      // Buffer days reduce the actual number of available study days in this week.
-      // For partial weeks, buffer days are capped so at least one study day remains.
-      const studyDays=Math.max(1,calendarDays-Math.min(p.buffer,Math.max(0,calendarDays-1)));
-
       rows.push({
         start,
         end,
-        calendarDays,
-        studyDays,
+        type:"plan",
+        dayCount:diffDays(start,end)+1,
         values:new Array(state.subjects.length).fill(0)
       });
-
       start=addDays(end,1);
     }
 
-    const totalStudyDays=rows.reduce((sum,r)=>sum+r.studyDays,0);
+    // Spread each subject in proportion to the calendar days in each planned week.
+    const totalPlanDays=rows.reduce((sum,r)=>sum+r.dayCount,0);
 
     state.subjects.forEach((s,si)=>{
-      let remaining=remLectures(s);
-      if(remaining<=0 || totalStudyDays<=0)return;
+      const remaining=remLectures(s);
+      if(remaining<=0 || totalPlanDays<=0)return;
 
-      // Allocate lectures proportionally to the actual study days available in each week.
-      const exact=rows.map(r=>remaining*(r.studyDays/totalStudyDays));
-      const base=exact.map(x=>Math.floor(x));
-      let assigned=base.reduce((a,b)=>a+b,0);
-      let left=remaining-assigned;
+      const exact=rows.map(r=>remaining*(r.dayCount/totalPlanDays));
+      const allocated=exact.map(x=>Math.floor(x));
+      let left=remaining-allocated.reduce((a,b)=>a+b,0);
 
       const order=exact
         .map((x,i)=>({i,frac:x-Math.floor(x)}))
         .sort((a,b)=>b.frac-a.frac || a.i-b.i);
 
       for(let k=0;k<left;k++){
-        base[order[k % order.length].i]+=1;
+        allocated[order[k % order.length].i]+=1;
       }
 
-      rows.forEach((r,wi)=>r.values[si]=base[wi]);
+      rows.forEach((r,i)=>r.values[si]=allocated[i]);
     });
+
+    // Buffer comes AFTER the target and carries no planned lectures.
+    // It is available only if the student has backlog.
+    if(p.buffer>0){
+      let bufferStart=addDays(p.target,1);
+      let daysLeft=p.buffer;
+
+      while(daysLeft>0){
+        const block=Math.min(7,daysLeft);
+        const bufferEnd=addDays(bufferStart,block-1);
+
+        rows.push({
+          start:bufferStart,
+          end:bufferEnd,
+          type:"buffer",
+          dayCount:block,
+          values:new Array(state.subjects.length).fill(0)
+        });
+
+        bufferStart=addDays(bufferEnd,1);
+        daysLeft-=block;
+      }
+    }
 
     return rows;
   }
 
   function renderStats(p){
-    const total=totalLectures(),done=completedLectures(),rem=p.rem,speed=clamp(num(state.playbackSpeed,1),.5,4);
+    const total=totalLectures(),done=completedLectures(),rem=p.rem,speed=clamp(num(state.playbackSpeed,1.5),1.1,2);
     const content=remainingContentHours(),watch=content/speed,watchPerDay=watch/p.studyDays;
     els.completedStat.textContent=`${done}/${total}`;
     els.completedPct.textContent=`${total?Math.round(done/total*100):0}% overall`;
@@ -543,8 +560,8 @@ tbody tr{transition:background .18s ease}
     els.dailyStat.textContent=rem?p.daily.toFixed(1):"0";
     els.weeklyStat.textContent=rem?Math.ceil(p.weekly):"0";
     els.watchStat.textContent=rem?formatHours(watchPerDay):"0h";
-    els.speedSmall.textContent=`at ${speed.toFixed(2).replace(/0$/,"")}× speed`;
-    els.daysBadge.textContent=`${p.rawDays} days left`;
+    els.speedSmall.textContent=`at ${speed.toFixed(1)}× speed`;
+    els.daysBadge.textContent=p.buffer?`${p.rawDays} days to target + ${p.buffer} buffer`:`${p.rawDays} days to target`;
     els.completeBanner.classList.toggle("show",rem===0&&total>0);
   }
 
@@ -564,30 +581,61 @@ tbody tr{transition:background .18s ease}
   }
 
   function renderWeekly(rows){
-    if(!state.subjects.length){els.weeklyTable.innerHTML='<tbody><tr><td>No subjects</td></tr></tbody>';return}
+    if(!state.subjects.length){
+      els.weeklyTable.innerHTML='<tbody><tr><td>No subjects</td></tr></tbody>';
+      return;
+    }
+
     const headers=state.subjects.map(s=>`<th>${escapeHtml(s.name||"Subject")}</th>`).join("");
     let html=`<thead><tr><th>Week</th>${headers}<th>Total</th></tr></thead><tbody>`;
-    rows.slice(0,60).forEach((r,i)=>{
-      const total=r.values.reduce((a,b)=>a+b,0);
-      html+=`<tr><td><strong>W${i+1}</strong><br><span class="muted">${fmtShort(r.start)} – ${fmtShort(r.end)}</span></td>
-        ${r.values.map(v=>`<td>${v}</td>`).join("")}<td class="total-cell">${total}</td></tr>`;
+
+    let planWeek=0;
+    let bufferWeek=0;
+
+    rows.slice(0,80).forEach(r=>{
+      if(r.type==="buffer"){
+        bufferWeek++;
+        html+=`<tr style="background:#fff7ed">
+          <td><strong>BUFFER ${bufferWeek}</strong><br><span class="muted">${fmtShort(r.start)} – ${fmtShort(r.end)}</span></td>
+          ${r.values.map(()=>`<td>Catch-up</td>`).join("")}
+          <td class="total-cell">—</td>
+        </tr>`;
+      }else{
+        planWeek++;
+        const total=r.values.reduce((a,b)=>a+b,0);
+        html+=`<tr>
+          <td><strong>W${planWeek}</strong><br><span class="muted">${fmtShort(r.start)} – ${fmtShort(r.end)}</span></td>
+          ${r.values.map(v=>`<td>${v}</td>`).join("")}
+          <td class="total-cell">${total}</td>
+        </tr>`;
+      }
     });
+
     html+="</tbody>";
     els.weeklyTable.innerHTML=html;
   }
 
   function renderPlanMessage(p,rows){
-    const speed=clamp(num(state.playbackSpeed,1),.5,4),content=remainingContentHours(),watch=content/speed;
-    const firstTotal=rows[0]?rows[0].values.reduce((a,b)=>a+b,0):0;
+    const speed=clamp(num(state.playbackSpeed,1.5),1.1,2);
+    const content=remainingContentHours();
+    const watch=content/speed;
+    const firstPlan=rows.find(r=>r.type==="plan");
+    const firstTotal=firstPlan?firstPlan.values.reduce((a,b)=>a+b,0):0;
+
     if(p.rem===0){
       els.planMessage.innerHTML="<strong>Lecture target complete.</strong> You can now use this time for revision, practice, mock tests and weak-area improvement.";
       return;
     }
-    els.planMessage.innerHTML=`You have <strong>${p.rem} lectures</strong> remaining and <strong>${p.rawDays} calendar days</strong> until
-      <strong>${fmtLong(p.target)}</strong>. With ${p.buffer} weekly buffer day${p.buffer===1?"":"s"}, aim for about
-      <strong>${p.daily.toFixed(1)} lectures per study day</strong> or <strong>${Math.ceil(p.weekly)} per week</strong>.
-      At <strong>${speed}×</strong>, your remaining video watch time is about <strong>${formatHours(watch)}</strong>.
-      Your immediate 7-day target is <strong>${firstTotal} lectures</strong>.`;
+
+    const bufferText=p.buffer>0
+      ? ` If you fall behind, you still have <strong>${p.buffer} safety buffer day${p.buffer===1?"":"s"}</strong>, so your final catch-up deadline becomes <strong>${fmtLong(p.finalDeadline)}</strong>.`
+      : "";
+
+    els.planMessage.innerHTML=`You have <strong>${p.rem} lectures</strong> remaining and <strong>${p.rawDays} calendar days</strong> until your main target of
+      <strong>${fmtLong(p.target)}</strong>. To finish on time, aim for about
+      <strong>${p.daily.toFixed(1)} lectures/day</strong> or <strong>${Math.ceil(p.weekly)} per week</strong>.
+      At <strong>${speed.toFixed(1)}×</strong>, your remaining video watch time is about <strong>${formatHours(watch)}</strong>.
+      Your immediate 7-day target is <strong>${firstTotal} lectures</strong>.${bufferText}`;
   }
 
   function renderPriority(){
@@ -601,41 +649,100 @@ tbody tr{transition:background .18s ease}
   }
 
   function renderSuggestions(p){
-    const rem=p.rem,speed=clamp(num(state.playbackSpeed,1),.5,4),content=remainingContentHours();
-    if(rem===0){els.suggestions.innerHTML='<div class="tip"><div class="kicker">Done</div><strong>Lectures completed</strong><p>Shift your focus to revision and question practice.</p></div>';els.speedTable.innerHTML="";return}
-    const options=[1,1.25,1.5,1.75,2];
+    const rem=p.rem;
+    const speed=clamp(num(state.playbackSpeed,1.5),1.1,2);
+    const content=remainingContentHours();
+
+    if(rem===0){
+      els.suggestions.innerHTML='<div class="tip"><div class="kicker">Done</div><strong>Lectures completed</strong><p>Shift your focus to revision and question practice.</p></div>';
+      els.speedTable.innerHTML="";
+      return;
+    }
+
+    const options=[];
+    for(let i=11;i<=20;i++) options.push(i/10);
+
     const next=options.find(x=>x>speed+0.001);
+
     const extraDaily=p.daily+1;
-    const fasterStudyDays=Math.ceil(rem/extraDaily);
-    const savedStudyDays=Math.max(0,p.studyDays-fasterStudyDays);
-    const sevenEarly=Math.max(1,p.rawDays-7);
-    const fullWeeks=Math.floor(sevenEarly/7),extra=sevenEarly%7,buffer=clamp(parseInt(state.bufferDays)||0,0,6);
-    const earlyStudyDays=Math.max(1,sevenEarly-fullWeeks*buffer-Math.min(buffer,extra));
-    const earlyPace=rem/earlyStudyDays;
-    const ranked=state.subjects.map(s=>({name:s.name||"Unnamed",hours:remLectures(s)*durationHours(s)})).sort((a,b)=>b.hours-a.hours);
+    const fasterDays=Math.ceil(rem/extraDaily);
+    const daysSaved=Math.max(0,p.rawDays-fasterDays);
+
+    const sevenEarlyDays=Math.max(1,p.rawDays-7);
+    const sevenEarlyPace=rem/sevenEarlyDays;
+
+    const ranked=state.subjects
+      .map(s=>({name:s.name||"Unnamed",hours:remLectures(s)*durationHours(s)}))
+      .sort((a,b)=>b.hours-a.hours);
     const biggest=ranked.find(x=>x.hours>0);
 
     let tips=[];
+
     if(next){
       const saved=content/speed-content/next;
-      tips.push({k:"Playback speed",title:`Try ${next}× where comfortable`,text:`That would save about ${formatHours(Math.max(0,saved))} of pure video time compared with ${speed}×. Keep difficult concepts slower.`});
+      tips.push({
+        k:"Playback speed",
+        title:`Try ${next.toFixed(1)}× where comfortable`,
+        text:`That can save about ${formatHours(Math.max(0,saved))} of pure video time compared with ${speed.toFixed(1)}×. Keep difficult concepts slower.`
+      });
     }else{
-      tips.push({k:"Playback speed",title:"Already at 2×",text:"Instead of pushing speed higher, gain time through consistency, skipping repeated admin sections and using buffer days for catch-up."});
+      tips.push({
+        k:"Playback speed",
+        title:"Already at 2.0×",
+        text:"Instead of increasing speed further, save time through consistency, selective replay and faster handling of familiar sections."
+      });
     }
-    tips.push({k:"Earlier finish",title:`+1 lecture/day`,text:`At roughly ${extraDaily.toFixed(1)} lectures per study day, you could finish about ${savedStudyDays} study day${savedStudyDays===1?"":"s"} earlier.`});
-    tips.push({k:"7-day safety buffer",title:`Aim for ${earlyPace.toFixed(1)}/study day`,text:`This pace targets completion about 7 days before your deadline, leaving the final week for backlog or revision.`});
-    if(biggest) tips.push({k:"Priority",title:`Protect time for ${biggest.name}`,text:`It currently has the largest remaining lecture-hour load. Give it your freshest study slot until that gap reduces.`});
-    tips.push({k:"Consistency",title:"Clear backlog weekly",text:"If one day slips, redistribute the missed lectures inside the same week instead of carrying them into the next week."});
-    tips.push({k:"Efficiency",title:"Use speed selectively",text:"Use higher playback for familiar/repetitive portions and normal speed for new concepts, illustrations and important problem-solving."});
 
-    els.suggestions.innerHTML=tips.map(t=>`<div class="tip"><div class="kicker">${escapeHtml(t.k)}</div><strong>${escapeHtml(t.title)}</strong><p>${escapeHtml(t.text)}</p></div>`).join("");
+    tips.push({
+      k:"Earlier finish",
+      title:"+1 lecture/day",
+      text:`At roughly ${extraDaily.toFixed(1)} lectures per day, you could finish about ${daysSaved} day${daysSaved===1?"":"s"} earlier than your main target.`
+    });
 
-    const maxWatch=content/options[0];
-    els.speedTable.innerHTML=`<div style="font-size:11px;color:#6b7280;margin:13px 0 4px"><strong style="color:#334155">Remaining watch-time comparison</strong></div>`+
+    tips.push({
+      k:"Finish 7 days early",
+      title:`Aim for ${sevenEarlyPace.toFixed(1)}/day`,
+      text:"This pace aims to complete your lectures one week before the main target date."
+    });
+
+    if(p.buffer>0){
+      tips.push({
+        k:"Safety buffer",
+        title:`${p.buffer} extra catch-up day${p.buffer===1?"":"s"}`,
+        text:`Your normal plan still finishes by ${fmtLong(p.target)}. The buffer only extends your fallback deadline to ${fmtLong(p.finalDeadline)} if you fall behind.`
+      });
+    }
+
+    if(biggest){
+      tips.push({
+        k:"Priority",
+        title:`Protect time for ${biggest.name}`,
+        text:"It currently has the largest remaining lecture-hour load, so it needs the most consistent study slots."
+      });
+    }
+
+    tips.push({
+      k:"Consistency",
+      title:"Do not plan to use the buffer",
+      text:"Treat the buffer as emergency catch-up time. Follow the main target pace first and use buffer days only for unavoidable backlog."
+    });
+
+    els.suggestions.innerHTML=tips.map(t=>
+      `<div class="tip"><div class="kicker">${escapeHtml(t.k)}</div><strong>${escapeHtml(t.title)}</strong><p>${escapeHtml(t.text)}</p></div>`
+    ).join("");
+
+    const maxWatch=content/1.1;
+    els.speedTable.innerHTML=
+      `<div style="font-size:11px;color:#6b7280;margin:13px 0 4px"><strong style="color:#334155">Remaining watch-time comparison</strong></div>`+
       options.map(x=>{
-        const h=content/x,pct=maxWatch?Math.round(h/maxWatch*100):0,current=Math.abs(x-speed)<.001;
-        return `<div class="speed-row ${current?"current":""}"><div>${x.toFixed(2).replace(/0$/,"")}×</div>
-        <div class="speed-bar"><div style="width:${pct}%"></div></div><div>${formatHours(h)}</div></div>`;
+        const h=content/x;
+        const pct=maxWatch?Math.round(h/maxWatch*100):0;
+        const current=Math.abs(x-speed)<0.001;
+        return `<div class="speed-row ${current?"current":""}">
+          <div>${x.toFixed(1)}×</div>
+          <div class="speed-bar"><div style="width:${pct}%"></div></div>
+          <div>${formatHours(h)}</div>
+        </div>`;
       }).join("");
   }
 
@@ -643,12 +750,15 @@ tbody tr{transition:background .18s ease}
   function renderPrintSheet(){
     const p=planning(), rows=distributeWeeks(p);
     const total=totalLectures(), done=completedLectures(), rem=p.rem;
-    const speed=clamp(num(state.playbackSpeed,1),.5,4);
-    const watchPerDay=(remainingContentHours()/speed)/p.studyDays;
+    const speed=clamp(num(state.playbackSpeed,1.5),1.1,2);
+    const watchPerDay=(remainingContentHours()/speed)/p.rawDays;
 
     $("printTitle").textContent=(state.studentName?state.studentName+"'s ":"")+"CA Lecture Planner";
     $("printSubtitle").textContent="Personal lecture completion plan";
-    $("printMeta").innerHTML=`Target: <strong>${fmtLong(p.target)}</strong><br>Playback speed: <strong>${speed}×</strong><br>Buffer: <strong>${p.buffer} day${p.buffer===1?"":"s"}/week</strong>`;
+    $("printMeta").innerHTML=`Target: <strong>${fmtLong(p.target)}</strong><br>
+      Playback speed: <strong>${speed.toFixed(1)}×</strong><br>
+      Safety buffer: <strong>${p.buffer} day${p.buffer===1?"":"s"}</strong><br>
+      Final fallback deadline: <strong>${fmtLong(p.finalDeadline)}</strong>`;
 
     $("pCompleted").textContent=`${done}/${total}`;
     $("pRemaining").textContent=rem;
@@ -661,7 +771,7 @@ tbody tr{transition:background .18s ease}
       return `<tr><td>${escapeHtml(s.name||"Unnamed")}</td><td>${escapeHtml(s.faculty||"—")}</td><td>${c}</td><td>${t}</td><td>${r}</td><td>${formatHours(durationHours(s))}</td><td>${pct}%</td></tr>`;
     }).join("");
 
-    const first=rows[0];
+    const first=rows.find(r=>r.type==="plan");
     $("printNextWeek").innerHTML=state.subjects.map((s,i)=>{
       const t=Math.max(0,num(s.total)), c=clamp(num(s.completed),0,t), r=Math.max(0,t-c);
       return `<tr><td>${escapeHtml(s.name||"Unnamed")}</td><td>${c}/${t}</td><td>${r}</td><td>${first?first.values[i]:0}</td></tr>`;
@@ -669,22 +779,33 @@ tbody tr{transition:background .18s ease}
 
     const headers=state.subjects.map(s=>`<th>${escapeHtml(s.name||"Subject")}</th>`).join("");
     let weekly=`<thead><tr><th>Week</th>${headers}<th>Total</th></tr></thead><tbody>`;
-    rows.slice(0,60).forEach((r,i)=>{
-      weekly+=`<tr><td>W${i+1}<br>${fmtShort(r.start)}–${fmtShort(r.end)}</td>${r.values.map(v=>`<td>${v}</td>`).join("")}<td><strong>${r.values.reduce((a,b)=>a+b,0)}</strong></td></tr>`;
+    let pw=0,bw=0;
+
+    rows.slice(0,80).forEach(r=>{
+      if(r.type==="buffer"){
+        bw++;
+        weekly+=`<tr><td>BUFFER ${bw}<br>${fmtShort(r.start)}–${fmtShort(r.end)}</td>${r.values.map(()=>`<td>Catch-up</td>`).join("")}<td>—</td></tr>`;
+      }else{
+        pw++;
+        weekly+=`<tr><td>W${pw}<br>${fmtShort(r.start)}–${fmtShort(r.end)}</td>${r.values.map(v=>`<td>${v}</td>`).join("")}<td><strong>${r.values.reduce((a,b)=>a+b,0)}</strong></td></tr>`;
+      }
     });
+
     weekly+="</tbody>";
     $("printWeekly").innerHTML=weekly;
 
     $("printNote").innerHTML=rem===0
       ? "<strong>All lectures complete.</strong> Shift focus to revision, question practice and tests."
-      : `Current target: <strong>${p.daily.toFixed(1)} lectures per study day</strong> and <strong>${Math.ceil(p.weekly)} per week</strong>. Remaining watch time at ${speed}× is approximately <strong>${formatHours(remainingContentHours()/speed)}</strong>.`;
+      : `Main target pace: <strong>${p.daily.toFixed(1)} lectures/day</strong> and <strong>${Math.ceil(p.weekly)} per week</strong>.
+         Remaining watch time at ${speed.toFixed(1)}× is approximately <strong>${formatHours(remainingContentHours()/speed)}</strong>.
+         The ${p.buffer}-day buffer starts only after the main target date.`;
   }
 
   function render(){
     els.studentName.value=state.studentName||"";
     els.targetDate.value=state.targetDate||"2026-12-31";
     els.playbackSpeed.value=String(state.playbackSpeed||1.5);
-    els.bufferDays.value=String(state.bufferDays||1);
+    els.bufferDays.value=String(state.bufferDays??7);
     els.heroTitle.textContent=(state.studentName?state.studentName+"'s ":"")+"CA Lecture Planner";
     renderSubjects();
     const p=planning(),rows=distributeWeeks(p);
@@ -705,9 +826,9 @@ tbody tr{transition:background .18s ease}
     if(!t||diffDays(now,t)<0){alert("Choose today or a future target date.");els.targetDate.value=state.targetDate;return}
     state.targetDate=els.targetDate.value;save();render();
   });
-  els.playbackSpeed.addEventListener("change",()=>{state.playbackSpeed=num(els.playbackSpeed.value,1.5);save();render()});
+  els.playbackSpeed.addEventListener("change",()=>{state.playbackSpeed=clamp(num(els.playbackSpeed.value,1.5),1.1,2);save();render()});
   els.bufferDays.addEventListener("change",()=>{
-    state.bufferDays=clamp(parseInt(els.bufferDays.value)||0,0,6);
+    state.bufferDays=clamp(parseInt(els.bufferDays.value)||0,0,60);
     els.bufferDays.value=String(state.bufferDays);
     save();
     render();
